@@ -16,5 +16,5 @@ spec:
       - name: nginx-pod
         image: nvbeta/swarm_nginx
         ports:
-        - containerPort: 80
+        - containerPort: 999
           protocol: TCP
