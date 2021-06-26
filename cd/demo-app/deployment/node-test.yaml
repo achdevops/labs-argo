@@ -1,0 +1,18 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: node-pod
+  namespace: demo
+spec:
+  selector:
+    matchLabels:
+      app: node-pod
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: node-pod
+    spec:
+      containers:
+      - name: node-pod
+        image: nvbeta/node

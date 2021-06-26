@@ -1,0 +1,165 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  namespace: default
+  generateName: build-scan-wf
+spec:
+  hostNetwork: true
+  entrypoint: cicd
+  volumes:
+  - name: docker-config
+    secret: 
+      secretName: regsecret
+  - name: nv-license
+    secret: 
+      secretName: nv-license
+  arguments:
+    parameters:
+    - name: repo
+      value: https://github.com/achdevops/hello-world.git
+    - name: revision
+      value: master
+    - name: image-name
+      value: achdevops/argo-python
+  templates:
+  - name: cicd
+    steps:
+      - - name: checkout
+          template: checkout
+      - - name: build-docker
+          template: build-docker
+          arguments:
+            artifacts:
+            - name: git-repo
+              from: "{{steps.checkout.outputs.artifacts.source}}"
+            parameters:
+            - name: image-tag
+              value: "{{steps.checkout.outputs.parameters.tag}}"
+      - - name: run-scan
+          template: run-scan
+          arguments:
+            parameters:
+            - name: image-tag
+              value: "{{steps.checkout.outputs.parameters.tag}}"
+  - name: checkout
+    inputs:
+      artifacts:
+      - name: git-repo
+        path: /
+        git:
+          repo: "{{workflow.parameters.repo}}"
+          revision: "{{workflow.parameters.revision}}"
+    metadata:
+      labels:
+        app: argo
+    container:
+      image: alpine/git
+      resources: 
+        requests:
+          cpu: 100m
+          memory: 100Mi
+        limits: 
+          cpu: 400m
+          memory: 800Mi
+      command: [sh, -c]
+      args: ["git rev-parse --short HEAD > /tmp/git-commit"]
+      volumeMounts:
+      - name: docker-config
+        mountPath: /root/.docker/config.json
+        subPath: .dockerconfigjson
+    outputs:
+      artifacts:
+      - name: source
+        path: /
+      parameters:
+      - name: tag
+        valueFrom:
+          path: /tmp/git-commit
+  - name: build-docker
+    inputs:
+      artifacts:
+      - name: git-repo
+        path: /
+      parameters:
+      - name: image-tag
+    metadata:
+      labels:
+        app: argo
+    container:
+      image: docker:17.10
+      resources: 
+        requests:
+          cpu: 100m
+          memory: 100Mi
+        limits: 
+          cpu: 400m
+          memory: 800Mi
+      workingDir: /
+      command: [sh, -c]
+      args: ["until docker ps; do sleep 1; done \ 
+        && docker build . -t {{workflow.parameters.image-name}}:{{inputs.parameters.image-tag}} \
+        && docker tag {{workflow.parameters.image-name}}:{{inputs.parameters.image-tag}} {{workflow.parameters.image-name}}:latest"]
+      env:
+      - name: DOCKER_HOST
+        value: 127.0.0.1
+      volumeMounts:
+      - name: docker-config
+        mountPath: /root/.docker/config.json
+        subPath: .dockerconfigjson
+    sidecars:
+    - name: docker-in-docker
+      image: docker:17.10-dind
+      resources: 
+        requests:
+          cpu: 100m
+          memory: 100Mi
+        limits: 
+          cpu: 400m
+          memory: 800Mi
+      securityContext:
+        privileged: true
+      mirrorVolumeMounts: true
+  - name: run-scan
+    inputs:
+      parameters:
+      - name: image-tag
+    metadata:
+      labels:
+        app: argo
+    container:
+      image: docker:17.10
+      resources: 
+        requests:
+          cpu: 100m
+          memory: 100Mi
+        limits: 
+          cpu: 400m
+          memory: 800Mi
+      workingDir: /
+      command: [sh, -c]
+      args: ["until docker ps; do sleep 1; done \ 
+        && docker images \
+        && echo {{workflow.parameters.image-name}}:{{inputs.parameters.image-tag}} \
+        && cat /license.txt"]
+      env:
+      - name: DOCKER_HOST
+        value: 127.0.0.1
+      volumeMounts:
+      - name: nv-license
+        mountPath: /license.txt
+      - name: docker-config
+        mountPath: /root/.docker/config.json
+        subPath: .dockerconfigjson
+    sidecars:
+    - name: docker-in-docker
+      image: docker:17.10-dind
+      resources: 
+        requests:
+          cpu: 100m
+          memory: 100Mi
+        limits: 
+          cpu: 400m
+          memory: 800Mi
+      securityContext:
+        privileged: true
+      mirrorVolumeMounts: true
