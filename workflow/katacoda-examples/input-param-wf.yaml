@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: input-parameters-
+spec:
+  entrypoint: main
+  arguments:
+    parameters:
+      - name: message
+        value: hello {{workflow.name}}
+  templates:
+    - name: main
+      inputs:
+        parameters:
+          - name: message
+      container:
+        image: docker/whalesay
+        command: [ cowsay ]
+        args: [ "{{inputs.parameters.message}}" ]
+#  argo submit --watch input-parameters-workflow.yaml -p message='Hi Katacoda!'

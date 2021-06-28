@@ -1,0 +1,48 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: input-artifact-git-
+  namespace: argo
+spec:
+  entrypoint: workflow  
+  templates:
+  
+  - name: git-clone
+    inputs:
+      artifacts:
+      - name: git-source
+        path: /src
+        git:
+          repo: https://github.com/achdevops/hello-world.git
+          revision: "master"
+    container:
+      image: golang:1.10
+      command: [sh, -c]
+      args: ["git status && ls"]
+      workingDir: /src
+
+  - name: dind-sidecar
+    container:
+      image: docker:19.03.13
+      command: [sh, -c]
+      args: ["until docker ps; do sleep 3;ls; done"]
+      env:
+      - name: DOCKER_HOST               # the docker daemon can be access on the standard port on localhost
+        value: 127.0.0.1
+    sidecars:
+    - name: dind
+      image: docker:19.03.13-dind          # Docker already provides an image for running a Docker daemon
+      env:
+        - name: DOCKER_TLS_CERTDIR         # Docker TLS env config
+          value: ""
+      securityContext:
+        privileged: true                # the Docker daemon can only run in a privileged container
+      mirrorVolumeMounts: true
+    
+  - name: workflow
+    steps:
+    - - name: get-code
+        template: git-clone
+
+    - - name: build-image
+        template: dind-sidecar

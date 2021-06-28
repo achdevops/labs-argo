@@ -1,0 +1,112 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: build-and-scan-
+  namespace: argo
+spec:
+  entrypoint: workflow
+  arguments:
+    parameters:
+    - name: revision
+      value: master
+    - name: repo
+      value: https://github.com/achdevops/hello-world.git
+  imagePullSecrets:
+  - name: regsecret
+  
+  templates:
+  
+  - name: git-clone
+    inputs:
+      artifacts:
+      - name: git-source
+        path: /src
+        git:
+          repo: https://github.com/achdevops/hello-world.git
+          revision: "master"
+    container:
+      image: golang:1.10
+      command: [sh, -c]
+      args: ["git status && ls"]
+      workingDir: /src
+
+  - name: build-image
+    inputs:
+      artifacts:
+        - name: code
+          path: /src
+          git:
+            repo: "{{workflow.parameters.repo}}"
+            revision: "{{workflow.parameters.revision}}"
+    container:
+      image: docker:19.03.13
+      command: [sh, -c]
+      args: ["until docker ps; do sleep 3; ls; cd /src; \
+              docker build -t my-image .; \
+              docker images; docker save -o my-image-latest.tar my-image:latest;ls; done"]
+      env:
+      - name: DOCKER_HOST               
+        value: 127.0.0.1
+    outputs:
+      artifacts:
+      # generate hello-art artifact from /tmp/hello_world.txt
+      # artifacts can be directories as well as files
+      - name: my-image-artifact
+        path: /src/my-image-latest.tar
+    sidecars:
+    - name: dind
+      image: docker:19.03.13-dind          
+      env:
+        - name: DOCKER_TLS_CERTDIR         
+          value: ""
+      securityContext:
+        privileged: true 
+      mirrorVolumeMounts: true
+  
+  - name: scan-image
+    inputs:
+      artifacts:
+      - name: image-to-scan
+        path: /src/my-image-latest.tar
+    volumes:
+      - name: docker-config
+        secret:
+          secretName: regsecret
+    container:
+      image: docker:19.03.13
+      command: [sh, -c]
+      args: ["until docker ps; do sleep 3; \
+              cd /src; ls; \
+              docker load < my-image-latest.tar; \
+              docker pull neuvector/scanner:latest; \
+              docker images; done"]
+      env:
+      - name: DOCKER_HOST               
+        value: 127.0.0.1
+      volumeMounts:
+          - name: docker-config
+            mountPath: ~/.docker/config.json
+    sidecars:
+    - name: dind
+      image: docker:19.03.13-dind         
+      env:
+        - name: DOCKER_TLS_CERTDIR         
+          value: ""
+      securityContext:
+        privileged: true 
+      mirrorVolumeMounts: true
+    
+  - name: workflow
+    steps:
+    - - name: clone
+        template: git-clone
+
+    - - name: build
+        template: build-image
+    
+    - - name: scan
+        template: scan-image
+        arguments:
+          artifacts:
+          - name: image-to-scan
+            from: "{{steps.build.outputs.artifacts.my-image-artifact}}"
