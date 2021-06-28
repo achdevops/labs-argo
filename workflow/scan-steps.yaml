@@ -7,10 +7,18 @@ spec:
   entrypoint: workflow
   arguments:
     parameters:
+    - name: high-vul-to-fail
+      value: 3
+    - name: med-vul-to-fail
+      value: 0
+    - name: names-vul-to-fail
+      value: ""
     - name: revision
       value: master
     - name: repo
       value: https://github.com/achdevops/hello-world.git
+    - name: license
+      value: ""
   imagePullSecrets:
   - name: regsecret
   
@@ -49,8 +57,6 @@ spec:
         value: 127.0.0.1
     outputs:
       artifacts:
-      # generate hello-art artifact from /tmp/hello_world.txt
-      # artifacts can be directories as well as files
       - name: my-image-artifact
         path: /src/my-image-latest.tar
     sidecars:
@@ -79,13 +85,22 @@ spec:
               cd /src; ls; \
               docker load < my-image-latest.tar; \
               docker pull neuvector/scanner:latest; \
-              docker images; done"]
+              docker images; \ 
+              docker run -i --privileged --name neuvector.scanner -e SCANNER_REPOSITORY=my-image -e SCANNER_TAG=latest -e SCANNER_LICENSE={{workflow.parameters.license}} -v /var/run/docker.sock:/var/run/docker.sock -v /var/neuvector:/var/neuvector neuvector/scanner; \
+              docker cp neuvector.scanner:/var/neuvector/scan_result.json .; \
+              docker rm neuvector.scanner; \
+              done"]
       env:
       - name: DOCKER_HOST               
         value: 127.0.0.1
       volumeMounts:
-          - name: docker-config
-            mountPath: ~/.docker/config.json
+      - name: docker-config
+        mountPath: /root/.docker/config.json
+        subPath: .dockerconfigjson
+    outputs:
+      artifacts:
+      - name: my-scan-report
+        path: /src/scan_result.json
     sidecars:
     - name: dind
       image: docker:19.03.13-dind         
@@ -95,7 +110,69 @@ spec:
       securityContext:
         privileged: true 
       mirrorVolumeMounts: true
-    
+  
+  - name: scan-report
+    inputs:
+      artifacts:
+      - name: my-report
+        path: /src/report.json
+    script:
+      image: debian:9.4
+      command: [bash]
+      source: |
+        apt-get update
+        apt-get -y install jq
+        #ls -l /src/
+        #cat /src/report.json | jq .
+        filename="/src/security-report.csv"
+        labels='"name","score","severity","description","package_name","package_version","fixed_version","link","published_timestamp","last_modified_timestamp"'
+        vars=".name,.score,.severity,.description,.package_name,.package_version,.fixed_version,.link,.published_timestamp,.last_modified_timestamp"
+        query='"report".vulnerabilities[]'
+        #transform and export to csv file - scan report
+        cat /src/report.json | jq -r '['$labels'],(.'$query' | ['$vars'])|@csv' > $filename
+        VUL_NUM=`cat /src/report.json | jq '.report.vulnerabilities | length'`
+        if [ $VUL_NUM -eq 0 ]; then
+          echo No vulnerabilities found.
+        else
+          echo Total number of vulnerabilities, $VUL_NUM, grouped by package name with vulnerability name.
+          jq '[.report.vulnerabilities | group_by(.package_name) | .[] | {package_name: .[0].package_name, vuln_name: [.[].name]}]' /src/report.json
+        fi
+        
+        #report analysis
+        high_vul_to_fail={{workflow.parameters.high-vul-to-fail}}
+        medium_vul_to_fail={{workflow.parameters.med-vul-to-fail}}
+        vul_names_to_fail="{{workflow.parameters.names-vul-to-fail}}"
+        FOUND_HIGH=`cat ./src/report.json | jq '.report.vulnerabilities[] | select(.severity == "High") | .severity' | wc -l`
+        FOUND_MEDIUM=`cat ./src/report.json | jq '.report.vulnerabilities[] | select(.severity == "Medium") | .severity' | wc -l`
+        VUL_LIST=`printf '["%s"]' "${vul_names_to_fail//,/\",\"}"`
+        VUL_LIST_FOUND=`cat ./src/report.json | jq --arg arr "$VUL_LIST" '.report.vulnerabilities[] | select(.name as $n | $arr | index($n)) |.name'`
+        
+        if [ -z "$VUL_LIST_FOUND" ]; then
+          echo -e "Found High Vulnerabilities = $FOUND_HIGH \nFound Medium Vulnerabilities = $FOUND_MEDIUM \n" > ./src/scan-summary.txt
+        else
+          echo -e "Found specific named vulnerabilities: \n$VUL_LIST_FOUND \n\nHigh Vulnerabilities threshold = $high_vul_to_fail \nFound High Vulnerabilities = $FOUND_HIGH \n\nMedium vulnerabilities threshold = $medium_vul_to_fail\nFound Medium Vulnerabilities = $FOUND_MEDIUM \n" > ./src/scan-summary.txt
+        fi
+        if [[ ! -z $VUL_LIST_FOUND ]]; then
+          echo Fail due to found specific named vulnerabilities.
+          scan_fail="true"
+        elif [ $high_vul_to_fail -ne 0 -a $FOUND_HIGH -ge $high_vul_to_fail ]; then
+          echo Fail due to high vulnerabilities found exceeds the criteria.
+          scan_fail="true"
+        elif [ $medium_vul_to_fail -ne 0 -a $FOUND_MEDIUM -ge $medium_vul_to_fail ]; then
+          echo Fail due to medium vulnerabilities found exceeds the criteria.
+          scan_fail="true"
+        else
+          echo Pass the criteria check.
+          scan_fail="false"
+        fi
+        if [ $scan_fail == "true" ]; then
+          echo -e "Image scanning failed.\n\n" >> ./src/scan-summary.txt
+          cat /src/scan-summary.txt
+          exit 1
+        else
+          echo -e "Image scanning succeed.\n\n" >> ./src/scan-summary.txt
+          cat /src/scan-summary.txt
+        fi
   - name: workflow
     steps:
     - - name: clone
@@ -110,3 +187,10 @@ spec:
           artifacts:
           - name: image-to-scan
             from: "{{steps.build.outputs.artifacts.my-image-artifact}}"
+
+    - - name: report
+        template: scan-report
+        arguments:
+          artifacts:
+          - name: my-report
+            from: "{{steps.scan.outputs.artifacts.my-scan-report}}"
