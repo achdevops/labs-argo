@@ -7,8 +7,10 @@ spec:
   entrypoint: workflow
   arguments:
     parameters:
+    - name: license
+      value: "pass-as-parameter-argument"
     - name: high-vul-to-fail
-      value: 3
+      value: 0
     - name: med-vul-to-fail
       value: 0
     - name: names-vul-to-fail
@@ -17,28 +19,12 @@ spec:
       value: master
     - name: repo
       value: https://github.com/achdevops/hello-world.git
-    - name: license
-      value: ""
   imagePullSecrets:
   - name: regsecret
   
   templates:
   
-  - name: git-clone
-    inputs:
-      artifacts:
-      - name: git-source
-        path: /src
-        git:
-          repo: https://github.com/achdevops/hello-world.git
-          revision: "master"
-    container:
-      image: golang:1.10
-      command: [sh, -c]
-      args: ["git status && ls"]
-      workingDir: /src
-
-  - name: build-image
+  - name: clone-build-image
     inputs:
       artifacts:
         - name: code
@@ -111,7 +97,7 @@ spec:
         privileged: true 
       mirrorVolumeMounts: true
   
-  - name: scan-report
+  - name: generate-report
     inputs:
       artifacts:
       - name: my-report
@@ -173,24 +159,29 @@ spec:
           echo -e "Image scanning succeed.\n\n" >> ./src/scan-summary.txt
           cat /src/scan-summary.txt
         fi
+    outputs:
+      artifacts:
+      - name: my-scan-summary
+        path: /src/scan-summary.txt
+      - name: my-csv-report
+        path: /src/security-report.csv
+
   - name: workflow
     steps:
-    - - name: clone
-        template: git-clone
 
-    - - name: build
-        template: build-image
+    - - name: clone-and-build
+        template: clone-build-image
     
-    - - name: scan
+    - - name: scan-an-image
         template: scan-image
         arguments:
           artifacts:
           - name: image-to-scan
-            from: "{{steps.build.outputs.artifacts.my-image-artifact}}"
+            from: "{{steps.clone-and-build.outputs.artifacts.my-image-artifact}}"
 
-    - - name: report
-        template: scan-report
+    - - name: vulnerability-report
+        template: generate-report
         arguments:
           artifacts:
           - name: my-report
-            from: "{{steps.scan.outputs.artifacts.my-scan-report}}"
+            from: "{{steps.scan-an-image.outputs.artifacts.my-scan-report}}"
