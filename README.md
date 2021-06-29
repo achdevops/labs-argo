@@ -11,7 +11,10 @@ Testing some argo tools + nv scan
     - nv-scan
 
 ## Neuvector Scan Example:
+- https://github.com/achdevops/labs-argo/blob/main/workflow/nv-scan/nv-scan.yaml
 
+## Argo WF Details:
+![Flow](workflow/nv-scan/wf.png)
 ### Inputs:
 
 ```
